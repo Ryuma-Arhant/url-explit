@@ -39,13 +39,9 @@ function warmDemoCache() {
   console.log(`Demo cache warmed: ${demos.length} audits`)
 }
 
-// Auto-enable demo mode if no Anakin key configured
-const hasAnakinKey = !!(
-  process.env.ANAKIN_API_KEY_1 ||
-  process.env.ANAKIN_API_KEY_2 ||
-  process.env.ANAKIN_API_KEY_3
-)
-if (!hasAnakinKey && process.env.DEMO_MODE !== 'false') {
+// Auto-enable demo mode if no Apify token configured
+const hasApifyToken = !!process.env.APIFY_API_TOKEN
+if (!hasApifyToken && process.env.DEMO_MODE !== 'false') {
   process.env.DEMO_MODE = 'true'
 }
 
@@ -61,7 +57,7 @@ async function start() {
   app.listen(PORT, () => {
     warmDemoCache()
     console.log(`\nTrustLens backend → http://localhost:${PORT}`)
-    console.log(`Anakin keys     : ${[1,2,3].filter(n => process.env[`ANAKIN_API_KEY_${n}`]).length}/3`)
+    console.log(`Apify token     : ${hasApifyToken ? 'YES' : 'NO (demo mode active)'}`)
     console.log(`LLM key         : ${hasLLMKey ? 'YES' : 'NO (follow-up chat uses stubs)'}`)
     console.log(`NVIDIA key      : ${process.env.NVIDIA_API_KEY ? 'YES (semantic similarity active)' : 'NO (using Jaccard fallback)'}`)
     console.log(`MiniMax key     : ${process.env.MINIMAX_API_KEY ? 'YES' : 'NO (using configured LLM)'}`)

@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { v4 as uuid } from 'uuid'
-import { scrapeProduct, findCompetitors } from '../services/anakin.js'
+import { scrapeProduct, findCompetitors } from '../services/apify.js'
 import { computeTrustScore, scoreToVerdict } from '../services/trustScore.js'
 import { generateNarrative, answerFollowUp } from '../services/llm.js'
 import { get as cacheGet, set as cacheSet } from '../services/cache.js'

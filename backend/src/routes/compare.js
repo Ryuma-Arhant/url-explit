@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { v4 as uuid } from 'uuid'
-import { scrapeProduct, findProductOnPlatforms } from '../services/anakin.js'
+import { scrapeProduct, findProductOnPlatforms } from '../services/apify.js'
 import { computeTrustScore, scoreToVerdict } from '../services/trustScore.js'
 import { productSimilarity } from '../services/nvidia.js'
 import { generateComparisonAnalysis } from '../services/minimax.js'
