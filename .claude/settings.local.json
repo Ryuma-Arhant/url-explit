@@ -13,7 +13,24 @@
       "WebFetch(domain:anakin.io)",
       "Bash(npx kill-port *)",
       "Bash(curl *)",
-      "Bash(node --input-type=module -e \"import{createInterface}from'readline';const l=[];const r=createInterface\\({input:process.stdin}\\);r.on\\('line',x=>l.push\\(x\\)\\);r.on\\('close',\\(\\)=>{const j=JSON.parse\\(l.join\\(''\\)\\);console.log\\('verdict:',j.verdict,'score:',j.trustScore,'id:',j.id\\)}\\)\")"
+      "Bash(node --input-type=module -e \"import{createInterface}from'readline';const l=[];const r=createInterface\\({input:process.stdin}\\);r.on\\('line',x=>l.push\\(x\\)\\);r.on\\('close',\\(\\)=>{const j=JSON.parse\\(l.join\\(''\\)\\);console.log\\('verdict:',j.verdict,'score:',j.trustScore,'id:',j.id\\)}\\)\")",
+      "Skill(superpowers:brainstorming)",
+      "Skill(superpowers:writing-plans)",
+      "Skill(superpowers:executing-plans)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git rm *)",
+      "Bash(git reset *)",
+      "Skill(railway:use-railway)",
+      "Bash(railway whoami *)",
+      "Bash(railway init *)",
+      "Bash(railway add *)",
+      "Bash(railway variable *)",
+      "Bash(railway environment *)",
+      "Bash(railway up *)",
+      "Bash(git remote *)",
+      "Bash(git config *)",
+      "Bash(git push *)"
     ]
   }
 }
