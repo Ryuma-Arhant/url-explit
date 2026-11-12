@@ -1,12 +1,15 @@
 import { Router } from 'express'
-import { v4 as uuid } from 'uuid'
-import { scrapeProduct, findProductOnPlatforms } from '../services/apify.js'
+import { randomUUID } from 'node:crypto'
+import { scrapeProduct } from '../services/scraper.js'
+import { findProductOnPlatforms, hasApifyToken } from '../services/apify.js'
 import { computeTrustScore, scoreToVerdict } from '../services/trustScore.js'
 import { productSimilarity } from '../services/nvidia.js'
-import { generateComparisonAnalysis } from '../services/minimax.js'
+import { generateComparisonAnalysis, generateRuleBasedAnalysis } from '../services/minimax.js'
 import { get as cacheGet, set as cacheSet } from '../services/cache.js'
 import { isUsingMemory } from '../services/mongodb.js'
-import { loadAllDemos } from './demo.js'
+import { validateProductUrl, identifySite } from '../services/sites.js'
+import { isDemoMode, pickDemo } from './demo.js'
+import { asyncHandler, sendScrapeError } from './util.js'
 
 let ComparisonModel = null
 async function getModel() {
@@ -20,30 +23,12 @@ async function getModel() {
 
 const router = Router()
 
-const SUPPORTED_DOMAINS = [
-  'amazon', 'flipkart', 'myntra', 'ebay', 'meesho',
-  'snapdeal', 'croma', 'tatacliq', 'ajio', 'reliancedigital',
-]
-
-function validateUrl(url) {
-  try {
-    const p = new URL(url)
-    if (!['http:', 'https:'].includes(p.protocol)) return 'URL must be http/https'
-    if (process.env.DEMO_MODE !== 'true') {
-      const host = p.hostname.toLowerCase()
-      if (!SUPPORTED_DOMAINS.some(d => host.includes(d)))
-        return 'Unsupported site. Supported: Amazon, Flipkart, Myntra, eBay, Meesho, Croma.'
-    }
-    return null
-  } catch { return 'Invalid URL format' }
-}
-
 // Build a snapshot from scraped data + search snippet fallback
 function buildSnapshot(site, url, scraped, snippetData, similarity) {
   const data = scraped ?? {}
-  const srcPrice   = data.price_current ?? snippetData?.priceFromSearch ?? null
-  const srcMrp     = data.price_mrp ?? null
-  const discPct    = srcMrp && srcPrice && srcMrp > srcPrice
+  const srcPrice = data.price_current ?? snippetData?.priceFromSearch ?? null
+  const srcMrp   = data.price_mrp ?? null
+  const discPct  = srcMrp && srcPrice && srcMrp > srcPrice
     ? Math.round(((srcMrp - srcPrice) / srcMrp) * 100)
     : null
 
@@ -52,150 +37,132 @@ function buildSnapshot(site, url, scraped, snippetData, similarity) {
     : null
 
   return {
-    site: scraped?.source_site ?? site,
+    site: identifySite(url)?.name ?? scraped?.source_site ?? site,
     url,
     title: scraped?.title ?? snippetData?.title ?? null,
-    brand: scraped?.brand ?? null,
+    brand: scraped?.brand || null,
     price_current: srcPrice,
     price_mrp: srcMrp,
     currency: scraped?.currency ?? 'INR',
     image: scraped?.images?.[0] ?? null,
+    images: scraped?.images ?? [],
     rating_avg: scraped?.rating_avg ?? null,
     rating_count: scraped?.rating_count ?? null,
     seller_name: scraped?.seller?.name ?? null,
     seller_age_days: scraped?.seller?.age_days ?? null,
-    delivery_estimate: scraped?.delivery_estimate ?? null,
+    delivery_estimate: scraped?.delivery_estimate || null,
+    in_stock: scraped?.in_stock ?? null,
+    availability: scraped?.availability ?? null,
     similarity_score: Math.round((similarity ?? 0) * 100) / 100,
     trust_score: scoreData?.trustScore ?? null,
     verdict: scoreData ? scoreToVerdict(scoreData.trustScore) : null,
     is_suspicious: scoreData ? scoreData.trustScore < 40 : false,
     discount_pct: discPct,
-    // carry review/seller detail for AI context
+    // detail for the seller page + AI context (null = page not analysed)
     _signals: scoreData?.signals ?? null,
+    _review: scoreData ? {
+      totalReviews: scoreData.reviewData.totalReviews,
+      genericPhrasePct: scoreData.reviewData.genericPhrasePct,
+      burstDetected: scoreData.reviewData.burstDetected,
+      burstPct: scoreData.reviewData.burstPct,
+      suspiciousNamePct: scoreData.reviewData.suspiciousNamePct,
+      returnPolicyFlags: scoreData.sellerData.return_policy_flags,
+    } : null,
   }
 }
 
 // ─── POST /api/compare ────────────────────────────────────────────────────────
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { url } = req.body ?? {}
-  if (!url) return res.status(400).json({ error: 'url is required' })
-
-  const err = validateUrl(url)
+  const demo = isDemoMode()
+  const err = validateProductUrl(url, { demo })
   if (err) return res.status(400).json({ error: err })
 
-  const cacheKey = `compare:${url}`
+  const cleanUrl = url.trim()
+  const cacheKey = `compare:${cleanUrl}`
   const cached = cacheGet(cacheKey)
   if (cached) return res.json({ ...cached, fromCache: true })
 
-  if (process.env.DEMO_MODE === 'true') {
-    const result = buildDemoComparison(url)
+  if (demo) {
+    const result = buildDemoComparison(cleanUrl)
+    if (!result) return res.status(500).json({ error: 'No demo data found in demo-data/' })
     cacheSet(cacheKey, result, 300)
+    cacheSet(`comparison:id:${result.id}`, result, 300)
     return res.json(result)
   }
 
   // ── Live path ──────────────────────────────────────────────────────────────
+  // Step 1: Scrape the source product page (shared with the audit request)
+  let sourceRaw
   try {
-    // Step 1: Scrape the source product page
-    let sourceRaw
+    sourceRaw = await scrapeProduct(cleanUrl)
+  } catch (e) {
+    return sendScrapeError(res, e, 'Compare')
+  }
+
+  const sourceSnapshot = buildSnapshot(identifySite(cleanUrl)?.name ?? 'Source', cleanUrl, sourceRaw, null, 1.0)
+
+  // Step 2: Find same product on other platforms (needs Apify Google search)
+  let platformResults = []
+  let notice = null
+  if (!hasApifyToken()) {
+    notice = 'Cross-platform search needs an Apify token (APIFY_API_TOKEN in backend/.env). Showing this listing only.'
+  } else {
     try {
-      sourceRaw = await scrapeProduct(url)
-    } catch (e) {
-      console.error('Source scrape failed:', e.message)
-      return res.json({ ...buildDemoComparison(url), _fallback: true })
-    }
-
-    const sourceScoreData = computeTrustScore(
-      sourceRaw,
-      sourceRaw.reviews ?? [],
-      sourceRaw.seller ?? {},
-      []
-    )
-
-    const sourceSnapshot = buildSnapshot(
-      new URL(url).hostname.replace('www.', ''),
-      url,
-      sourceRaw,
-      null,
-      1.0
-    )
-
-    // Step 2: Find same product on other platforms (targeted per-platform search)
-    let platformResults = []
-    try {
-      platformResults = await findProductOnPlatforms(
-        sourceRaw.title,
-        sourceRaw.brand,
-        url,
-        3  // search 3 other platforms
-      )
+      platformResults = await findProductOnPlatforms(sourceRaw.title, sourceRaw.brand, cleanUrl, 3)
       console.log(`Found ${platformResults.length} platform matches for: ${sourceRaw.title?.slice(0, 40)}`)
+      if (!platformResults.length) notice = 'No matching listings were found on other platforms.'
     } catch (e) {
       console.warn('Platform search failed:', e.message)
+      notice = `Cross-platform search failed: ${e.message}`
     }
-
-    // Step 3: Scrape each platform's product page in parallel
-    const scrapedResults = await Promise.allSettled(
-      platformResults.map(p => scrapeProduct(p.url))
-    )
-
-    // Step 4: Build match snapshots — use scraped data, fall back to search snippet
-    const matchSnapshots = await Promise.all(
-      platformResults.map(async (p, i) => {
-        const scraped = scrapedResults[i].status === 'fulfilled'
-          ? scrapedResults[i].value
-          : null
-
-        if (scrapedResults[i].status === 'rejected') {
-          console.warn(`Scrape failed for ${p.url}: ${scrapedResults[i].reason?.message}`)
-        }
-
-        // Compute similarity: NVIDIA if available, else Jaccard
-        const sim = await productSimilarity(sourceRaw.title, p.title).catch(() => p.similarity_score)
-
-        return buildSnapshot(p.site, p.url, scraped, p, sim)
-      })
-    )
-
-    // Filter out matches with very low similarity after scraping
-    const validMatches = matchSnapshots.filter(m =>
-      m.similarity_score >= 0.3 || m.price_current != null
-    )
-
-    // Step 5: AI comparison analysis
-    const aiRecommendation = await generateComparisonAnalysis(
-      sourceSnapshot,
-      validMatches
-    ).catch(() => null)
-
-    const comparison = {
-      id: uuid(),
-      sourceUrl: url,
-      sourceProduct: sourceSnapshot,
-      matches: validMatches,
-      aiRecommendation,
-      comparedAt: new Date().toISOString(),
-      fromCache: false,
-    }
-
-    // Persist to MongoDB (non-blocking)
-    const Model = await getModel()
-    if (Model) {
-      Model.create({ _id: comparison.id, ...comparison })
-        .catch(e => console.warn('DB save failed:', e.message))
-    }
-
-    cacheSet(cacheKey, comparison, 3600)
-    cacheSet(`comparison:id:${comparison.id}`, comparison, 0)
-
-    return res.json(comparison)
-  } catch (err) {
-    console.error('Compare error:', err)
-    return res.status(500).json({ error: 'Comparison failed: ' + err.message })
   }
-})
+
+  // Step 3: Scrape each platform's product page in parallel
+  const scrapedResults = await Promise.allSettled(platformResults.map(p => scrapeProduct(p.url)))
+
+  // Step 4: Build match snapshots — use scraped data, fall back to search snippet
+  const matchSnapshots = await Promise.all(
+    platformResults.map(async (p, i) => {
+      const r = scrapedResults[i]
+      const scraped = r.status === 'fulfilled' ? r.value : null
+      if (r.status === 'rejected') console.warn(`Scrape failed for ${p.url}: ${r.reason?.message}`)
+      const sim = await productSimilarity(sourceRaw.title, scraped?.title ?? p.title).catch(() => p.similarity_score)
+      return buildSnapshot(p.site, p.url, scraped, p, sim)
+    })
+  )
+
+  const validMatches = matchSnapshots.filter(m => m.similarity_score >= 0.3 || m.price_current != null)
+
+  // Step 5: AI comparison analysis (falls back to rule-based internally)
+  const aiRecommendation = await generateComparisonAnalysis(sourceSnapshot, validMatches)
+    .catch(() => generateRuleBasedAnalysis(sourceSnapshot, validMatches))
+
+  const comparison = {
+    id: randomUUID(),
+    sourceUrl: cleanUrl,
+    sourceProduct: sourceSnapshot,
+    matches: validMatches,
+    aiRecommendation,
+    notice,
+    comparedAt: new Date().toISOString(),
+    fromCache: false,
+  }
+
+  // Persist to MongoDB (non-blocking)
+  const Model = await getModel()
+  if (Model) {
+    Model.create({ _id: comparison.id, ...comparison })
+      .catch(e => console.warn('DB save failed:', e.message))
+  }
+
+  cacheSet(cacheKey, comparison, 3600)
+  cacheSet(`comparison:id:${comparison.id}`, comparison, 0)
+  return res.json(comparison)
+}))
 
 // ─── GET /api/compare/:id ─────────────────────────────────────────────────────
-router.get('/:id', async (req, res) => {
+router.get('/:id', asyncHandler(async (req, res) => {
   const cached = cacheGet(`comparison:id:${req.params.id}`)
   if (cached) return res.json({ ...cached, fromCache: true })
 
@@ -208,77 +175,82 @@ router.get('/:id', async (req, res) => {
     }
   }
   return res.status(404).json({ error: 'Comparison not found or expired' })
-})
+}))
 
-// ─── Demo comparison ──────────────────────────────────────────────────────────
+// ─── Demo comparison (DEMO_MODE=true only) ───────────────────────────────────
 function buildDemoComparison(url) {
-  const demos = loadAllDemos()
-  const idx = Math.abs(url.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % demos.length
-  const base = demos[idx]
+  const base = pickDemo(url)
+  if (!base) return null
 
   const sourceProduct = {
-    site: base.product?.source_site ?? 'amazon.in',
+    site: identifySite(base.sourceUrl)?.name ?? base.product?.source_site ?? 'Source',
     url,
     title: base.product?.title,
     brand: base.product?.brand,
     price_current: base.priceData?.current,
     price_mrp: base.priceData?.mrp,
     currency: base.priceData?.currency ?? 'INR',
-    image: null,
+    image: base.product?.images?.[0] ?? null,
+    images: base.product?.images ?? [],
     rating_avg: base.product?.rating_avg,
     rating_count: base.product?.rating_count,
     seller_name: base.sellerData?.name,
-    seller_age_days: base.sellerData?.age_days,
+    seller_age_days: base.sellerData?.age_days ?? null,
     delivery_estimate: '2-4 days',
     similarity_score: 1.0,
     trust_score: base.trustScore,
     verdict: base.verdict,
     is_suspicious: base.trustScore < 40,
     discount_pct: base.priceData?.discountPct,
+    _signals: base.signals ?? null,
+    _review: base.reviewData ? {
+      totalReviews: base.reviewData.totalReviews,
+      genericPhrasePct: base.reviewData.genericPhrasePct,
+      burstDetected: base.reviewData.burstDetected,
+      burstPct: base.reviewData.burstPct,
+      suspiciousNamePct: base.reviewData.suspiciousNamePct,
+      returnPolicyFlags: base.sellerData?.return_policy_flags ?? [],
+    } : null,
   }
 
-  const DEMO_PLATFORMS = ['Flipkart', 'Myntra', 'Meesho']
-  const matches = (base.priceData?.competitors ?? []).map((c, i) => ({
-    site: c.site ?? DEMO_PLATFORMS[i] ?? 'Other',
-    url: c.url ?? '#',
-    title: c.title ?? base.product?.title,
-    brand: base.product?.brand,
-    price_current: c.price,
-    price_mrp: Math.round(c.price * 1.3),
-    currency: 'INR',
-    image: null,
-    rating_avg: parseFloat((3.8 + i * 0.2).toFixed(1)),
-    rating_count: 500 + i * 300,
-    seller_name: `${(c.site ?? DEMO_PLATFORMS[i] ?? 'Store').split('.')[0]} Official`,
-    seller_age_days: 180 + i * 90,
-    delivery_estimate: i === 0 ? '1-2 days' : '3-5 days',
-    similarity_score: c.similarity_score ?? 0.85,
-    trust_score: 58 + i * 12,
-    verdict: 'WAIT',
-    is_suspicious: false,
-    discount_pct: 22 + i * 5,
-  }))
+  const matches = (base.priceData?.competitors ?? []).map((c, i) => {
+    const trust = 58 + i * 12
+    const mrp = Math.round(c.price * 1.3)
+    return {
+      site: c.site ?? 'Other',
+      url: c.url && c.url !== '#' ? c.url : null,
+      title: c.title ?? base.product?.title,
+      brand: null,
+      price_current: c.price,
+      price_mrp: mrp,
+      currency: 'INR',
+      image: null,
+      images: [],
+      rating_avg: parseFloat((3.8 + i * 0.2).toFixed(1)),
+      rating_count: 500 + i * 300,
+      seller_name: `${(c.site ?? 'Store').split('.')[0]} Official`,
+      seller_age_days: 180 + i * 90,
+      delivery_estimate: i === 0 ? '1-2 days' : '3-5 days',
+      similarity_score: c.similarity_score ?? 0.85,
+      trust_score: trust,
+      verdict: scoreToVerdict(trust),
+      is_suspicious: trust < 40,
+      discount_pct: Math.round(((mrp - c.price) / mrp) * 100),
+      _signals: null,
+      _review: null,
+    }
+  })
 
   return {
-    id: `demo-compare-${idx}`,
+    id: `demo-compare-${base.id}`,
     sourceUrl: url,
     sourceProduct,
     matches,
-    aiRecommendation: {
-      best_value_index: matches.length ? 1 : 0,
-      best_value_reason: matches.length
-        ? `${matches[0].site} offers lower price for the same product`
-        : 'Only one listing found',
-      safest_seller_index: 0,
-      safest_seller_reason: 'Source listing has strongest seller trust signals',
-      suspicious_indices: base.trustScore < 40 ? [0] : [],
-      suspicious_reason: base.trustScore < 40 ? base.verdictReason : null,
-      best_deal_index: matches.length ? 1 : 0,
-      verdict: base.verdictReason + ' Compare with alternatives before purchasing.',
-      fake_discount_detected: base.priceData?.isFakeDiscount ?? false,
-    },
+    aiRecommendation: generateRuleBasedAnalysis(sourceProduct, matches),
+    notice: null,
     comparedAt: new Date().toISOString(),
     fromCache: false,
+    _demo: true,
   }
 }
 

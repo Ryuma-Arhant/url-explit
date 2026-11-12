@@ -5,6 +5,37 @@ import { callLLM, parseJSON } from './llm.js'
 // Free tier: https://platform.minimaxi.com
 // Falls back to existing LLM (Groq/Gemini) if no MiniMax key
 
+// Red flags are computed from the data, never guessed by the LLM:
+// - suspicious  = trust score under 40 (out of stock is NOT suspicious)
+// - fake anchor = >60% "discount" off MRP while another in-stock store sells at
+//   about the same price (the MRP is inflated, not the price cut real)
+export function comparisonFlags(source, matches) {
+  const all = [source, ...matches]
+  const suspicious_indices = all
+    .map((p, i) => ({ i, score: p.trust_score }))
+    .filter(({ score }) => typeof score === 'number' && score < 40)
+    .map(({ i }) => i)
+
+  const priced = all.filter(p => p.price_current && p.in_stock !== false)
+  const fake_discount_detected = priced.some(p =>
+    p.price_mrp > p.price_current &&
+    (p.price_mrp - p.price_current) / p.price_mrp > 0.6 &&
+    priced.some(q => q !== p && Math.abs(q.price_current - p.price_current) / p.price_current < 0.1)
+  )
+  return { suspicious_indices, fake_discount_detected }
+}
+
+function withDataFlags(ai, source, matches) {
+  const flags = comparisonFlags(source, matches)
+  return {
+    ...ai,
+    ...flags,
+    suspicious_reason: flags.suspicious_indices.length
+      ? (ai?.suspicious_reason || 'Low trust score — possible fake reviews, inflated MRP, or weak return policy')
+      : null,
+  }
+}
+
 export async function generateComparisonAnalysis(sourceProduct, matches) {
   const prompt = buildPrompt(sourceProduct, matches)
 
@@ -12,7 +43,7 @@ export async function generateComparisonAnalysis(sourceProduct, matches) {
   if (process.env.MINIMAX_API_KEY) {
     try {
       const result = await callMiniMax(prompt)
-      return parseJSON(result)
+      return withDataFlags(parseJSON(result), sourceProduct, matches)
     } catch (err) {
       console.warn('MiniMax failed, falling back to LLM:', err.message)
     }
@@ -20,7 +51,7 @@ export async function generateComparisonAnalysis(sourceProduct, matches) {
 
   try {
     const result = await callLLM(prompt, 500)
-    return parseJSON(result)
+    return withDataFlags(parseJSON(result), sourceProduct, matches)
   } catch {
     return generateRuleBasedAnalysis(sourceProduct, matches)
   }
@@ -54,7 +85,7 @@ async function callMiniMax(prompt) {
 
 function buildPrompt(source, matches) {
   const fmt = (p, label) =>
-    `${label}: ${p.site} | Price ₹${p.price_current ?? '?'} | MRP ₹${p.price_mrp ?? '?'} | ` +
+    `${label}: ${p.site} | ${p.in_stock === false ? 'OUT OF STOCK (not buyable)' : `Price ₹${p.price_current ?? '?'}`} | MRP ₹${p.price_mrp ?? '?'} | ` +
     `Rating ${p.rating_avg ?? '?'}★ (${p.rating_count ?? '?'} reviews) | ` +
     `Seller age ${p.seller_age_days ?? '?'} days | Trust ${p.trust_score ?? '?'}/100`
 
@@ -79,8 +110,25 @@ Return ONLY valid JSON (no markdown):
 }`
 }
 
-function generateRuleBasedAnalysis(source, matches) {
+export function generateRuleBasedAnalysis(source, matches) {
   const all = [source, ...matches]
+
+  if (!matches.length) {
+    const suspicious = (source.trust_score ?? 100) < 40
+    return {
+      best_value_index: 0,
+      best_value_reason: 'Only this listing was found, so there is nothing to compare prices against yet.',
+      safest_seller_index: 0,
+      safest_seller_reason: `Trust score ${source.trust_score ?? '?'}/100 for this listing.`,
+      suspicious_indices: suspicious ? [0] : [],
+      suspicious_reason: suspicious ? 'Low trust score — possible fake reviews, inflated MRP, or weak return policy' : null,
+      best_deal_index: 0,
+      verdict: suspicious
+        ? 'This listing shows several risk signals. Look for the same product from a more trusted seller.'
+        : 'No other listings to compare. Review the trust signals below before buying.',
+      fake_discount_detected: false,
+    }
+  }
 
   const bestTrustIdx = all.reduce((bi, p, i) =>
     (p.trust_score ?? 0) > (all[bi].trust_score ?? 0) ? i : bi, 0)
@@ -90,16 +138,7 @@ function generateRuleBasedAnalysis(source, matches) {
     return price < (all[bi].price_current ?? Infinity) ? i : bi
   }, 0)
 
-  const suspicious = all
-    .map((p, i) => ({ i, score: p.trust_score ?? 100 }))
-    .filter(({ score }) => score < 40)
-    .map(({ i }) => i)
-
-  const fakeMRP = all.some(p => {
-    if (!p.price_current || !p.price_mrp) return false
-    const disc = ((p.price_mrp - p.price_current) / p.price_mrp) * 100
-    return disc > 70
-  })
+  const { suspicious_indices: suspicious, fake_discount_detected: fakeMRP } = comparisonFlags(source, matches)
 
   return {
     best_value_index: cheapestIdx,

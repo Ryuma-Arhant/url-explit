@@ -35,16 +35,17 @@ export default function AIRecommendation({ recommendation, allProducts }) {
     best_value_reason,
     safest_seller_index,
     safest_seller_reason,
-    suspicious_indices = [],
     suspicious_reason,
     verdict,
     fake_discount_detected,
   } = recommendation
+  // LLM output may send null or a non-array here
+  const suspicious_indices = Array.isArray(recommendation.suspicious_indices) ? recommendation.suspicious_indices : []
 
   const getLabel = (idx) => {
     if (!allProducts || idx == null) return 'Unknown'
     const p = allProducts[idx]
-    return p ? `${p.site}${p.price_current ? ` · ₹${p.price_current.toLocaleString()}` : ''}` : 'Unknown'
+    return p ? `${p.site}${p.price_current ? ` · ₹${Number(p.price_current).toLocaleString('en-IN')}` : ''}` : 'Unknown'
   }
 
   return (

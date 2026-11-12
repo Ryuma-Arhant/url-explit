@@ -21,6 +21,16 @@ services:
         sync: false
       - key: TOGETHER_API_KEY
         sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: MINIMAX_API_KEY
+        sync: false
+      - key: MONGODB_URI
+        sync: false
+      # The frontend's public URL, e.g. https://trustlens-frontend.onrender.com
+      # (required — otherwise CORS blocks the Render-hosted frontend)
+      - key: FRONTEND_URL
+        sync: false
 
   # ── Frontend: Vite React SPA ────────────────────────────────────────────────
   - type: web

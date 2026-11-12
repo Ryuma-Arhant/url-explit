@@ -29,17 +29,18 @@ function scorePriceReality(product, competitors) {
 
   if (!current) return { score: 12, isFakeDiscount: false, discountPct: null }
 
-  // No competitors → neutral half score
-  if (!competitors?.length) return { score: 17, isFakeDiscount: false, discountPct: null }
+  const discountPct = mrp && mrp > current ? ((mrp - current) / mrp) * 100 : 0
+  const shownDiscount = mrp && mrp > current ? Math.round(discountPct) : null
+
+  // No competitors → neutral score (can't verify the price against the market)
+  if (!competitors?.length) return { score: 17, isFakeDiscount: false, discountPct: shownDiscount }
 
   const validComps = competitors.filter(c => c.price && c.similarity_score >= 0.75)
-  if (!validComps.length) return { score: 17, isFakeDiscount: false, discountPct: null }
+  if (!validComps.length) return { score: 17, isFakeDiscount: false, discountPct: shownDiscount }
 
   const median = validComps
     .map(c => c.price)
     .sort((a, b) => a - b)[Math.floor(validComps.length / 2)]
-
-  const discountPct = mrp ? ((mrp - current) / mrp) * 100 : 0
   const pctFromMedian = Math.abs(current - median) / median
 
   // Fake anchor: MRP discount > 60% AND price ≈ competitor median
@@ -106,12 +107,17 @@ function scoreReviewAuthenticity(reviews = []) {
 
 // 3. Seller Trust (max 20)
 function scoreSellerTrust(seller = {}) {
-  const { age_days = 0, rating = 0, total_reviews = 0 } = seller
+  const age = typeof seller?.age_days === 'number' ? seller.age_days : null // null = unknown
+  const rating = seller?.rating ?? 0
+  const totalReviews = seller?.total_reviews ?? 0
   let score = 20
 
-  if (age_days < 30) score -= 12
-  else if (age_days < 90) score -= 6
-  else if (age_days < 180) score -= 2
+  // Most marketplaces don't publish seller join dates. Unknown age is a small
+  // "unverified" deduction — not the brand-new-seller penalty.
+  if (age === null) score -= 4
+  else if (age < 30) score -= 12
+  else if (age < 90) score -= 6
+  else if (age < 180) score -= 2
 
   if (rating > 0) {
     if (rating < 3) score -= 6
@@ -119,7 +125,7 @@ function scoreSellerTrust(seller = {}) {
   }
 
   // Suspicious velocity: many reviews in very short time
-  if (age_days > 0 && total_reviews / age_days > 10) score -= 4
+  if (age > 0 && totalReviews / age > 10) score -= 4
 
   return Math.max(0, score)
 }
@@ -189,10 +195,10 @@ export function computeTrustScore(product, reviews, seller, competitors) {
       sampleReviews: reviews?.slice(0, 5) ?? [],
     },
     sellerData: {
-      name: seller?.name,
-      age_days: seller?.age_days ?? 0,
-      rating: seller?.rating ?? 0,
-      total_reviews: seller?.total_reviews ?? 0,
+      name: seller?.name ?? null,
+      age_days: typeof seller?.age_days === 'number' ? seller.age_days : null,
+      rating: seller?.rating ?? null,
+      total_reviews: seller?.total_reviews ?? null,
       return_policy_flags: returnResult.flags,
     },
   }
