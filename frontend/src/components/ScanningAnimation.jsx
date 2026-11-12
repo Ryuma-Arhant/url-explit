@@ -3,10 +3,10 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { CheckCircle, Loader2 } from 'lucide-react'
 
 const STEPS = [
-  { id: 1, text: 'Extracting product data via Anakin...', duration: 1600 },
-  { id: 2, text: 'Searching 3 competitor sites...', duration: 1400 },
+  { id: 1, text: 'Fetching product page...', duration: 1600 },
+  { id: 2, text: 'Reading price, images & reviews...', duration: 1400 },
   { id: 3, text: 'Analyzing reviews for bot patterns...', duration: 1800 },
-  { id: 4, text: 'Cross-checking seller history...', duration: 1200 },
+  { id: 4, text: 'Checking seller & return policy...', duration: 1200 },
   { id: 5, text: 'Computing trust signals...', duration: 1000 },
 ]
 

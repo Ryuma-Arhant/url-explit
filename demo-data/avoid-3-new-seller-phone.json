@@ -16,7 +16,7 @@
     "Price ₹24,999 is 40% below competitor median (₹41,500) — risk of counterfeit or misrepresented grade",
     "89 reviews all posted within 3 days of listing with 97% five-star ratings"
   ],
-  "trustScore": 8,
+  "trustScore": 5,
   "signals": {
     "priceReality": 2,
     "reviewAuthenticity": 1,

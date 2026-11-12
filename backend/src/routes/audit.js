@@ -1,138 +1,100 @@
 import { Router } from 'express'
-import { v4 as uuid } from 'uuid'
-import { scrapeProduct, findCompetitors } from '../services/apify.js'
+import { randomUUID } from 'node:crypto'
+import { scrapeProduct } from '../services/scraper.js'
+import { findCompetitors, hasApifyToken } from '../services/apify.js'
 import { computeTrustScore, scoreToVerdict } from '../services/trustScore.js'
 import { generateNarrative, answerFollowUp } from '../services/llm.js'
 import { get as cacheGet, set as cacheSet } from '../services/cache.js'
-import { loadAllDemos } from './demo.js'
+import { validateProductUrl } from '../services/sites.js'
+import { isDemoMode, pickDemo } from './demo.js'
+import { asyncHandler, sendScrapeError } from './util.js'
 
 const router = Router()
 
-const SUPPORTED_DOMAINS = [
-  'amazon', 'flipkart', 'myntra', 'ebay', 'meesho',
-  'snapdeal', 'croma', 'tatacliq', 'ajio', 'reliancedigital',
-]
-
-function validateUrl(url) {
-  let parsed
-  try { parsed = new URL(url) } catch { return 'Invalid URL format' }
-  if (!['http:', 'https:'].includes(parsed.protocol)) return 'URL must start with http:// or https://'
-  // In live mode only, enforce supported domains
-  if (process.env.DEMO_MODE !== 'true') {
-    const host = parsed.hostname.toLowerCase()
-    if (!SUPPORTED_DOMAINS.some(d => host.includes(d))) {
-      return `Unsupported site. Supported: Amazon, Flipkart, Myntra, eBay, Meesho, Croma, and more.`
-    }
-  }
-  return null // valid
-}
-
-function pickDemoFallback(url) {
-  const demos = loadAllDemos()
-  // Try keyword match first
-  const keyword = demos.find(d => d._matchKeyword && url.includes(d._matchKeyword))
-  if (keyword) return keyword
-  // Spread load: hash the URL to always return the same demo for the same URL
-  const idx = Math.abs(url.split('').reduce((a, c) => a + c.charCodeAt(0), 0)) % demos.length
-  return demos[idx] ?? demos[0]
-}
-
 // POST /api/audit
-router.post('/', async (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { url } = req.body ?? {}
-  if (!url || typeof url !== 'string') {
-    return res.status(400).json({ error: 'url is required' })
-  }
-
-  const validationError = validateUrl(url)
+  const demo = isDemoMode()
+  const validationError = validateProductUrl(url, { demo })
   if (validationError) return res.status(400).json({ error: validationError })
 
-  // Check cache (dedup identical requests)
-  const cacheKey = `audit:${url}`
+  const cleanUrl = url.trim()
+  const cacheKey = `audit:${cleanUrl}`
   const cached = cacheGet(cacheKey)
   if (cached) return res.json(cached)
 
-  // Demo mode: consistent demo per URL
-  if (process.env.DEMO_MODE === 'true') {
-    const demo = pickDemoFallback(url)
-    const result = { ...demo, sourceUrl: url }
+  // Demo mode (DEMO_MODE=true): canned audits, clearly labelled as demo data
+  if (demo) {
+    const d = pickDemo(cleanUrl)
+    if (!d) return res.status(500).json({ error: 'No demo data found in demo-data/' })
+    const result = { ...d, sourceUrl: cleanUrl, _demo: true }
     cacheSet(cacheKey, result, 300)
     return res.json(result)
   }
 
   // ── Live scraping path ───────────────────────────────────────────────────
+  let productData
   try {
-    let productData
-    try {
-      productData = await scrapeProduct(url)
-    } catch (err) {
-      console.error('Anakin scrape failed:', err.message)
-      const fallback = pickDemoFallback(url)
-      return res.json({ ...fallback, sourceUrl: url, _fallback: true })
-    }
+    productData = await scrapeProduct(cleanUrl)
+  } catch (err) {
+    return sendScrapeError(res, err, 'Audit')
+  }
 
-    let competitorData = { matches: [] }
+  let competitors = []
+  if (hasApifyToken()) {
     try {
-      competitorData = await findCompetitors(productData.title, productData.brand, productData.specifications)
+      competitors = (await findCompetitors(productData.title, productData.brand))?.matches ?? []
     } catch (err) {
       console.warn('Competitor search failed (non-fatal):', err.message)
     }
-
-    const competitors = competitorData?.matches ?? []
-    const scoreData = computeTrustScore(
-      productData,
-      productData.reviews ?? [],
-      productData.seller ?? {},
-      competitors
-    )
-
-    const verdict = scoreToVerdict(scoreData.trustScore)
-    let narrative = { verdictReason: 'Analysis complete.', insights: [] }
-    try {
-      narrative = await generateNarrative(productData, scoreData, verdict)
-    } catch (err) {
-      console.warn('Narrative generation failed (non-fatal):', err.message)
-    }
-
-    const audit = {
-      id: uuid(),
-      sourceUrl: url,
-      product: {
-        title: productData.title,
-        brand: productData.brand,
-        images: productData.images ?? [],
-        rating_avg: productData.rating_avg,
-        rating_count: productData.rating_count,
-        source_site: productData.source_site,
-      },
-      verdict,
-      verdictReason: narrative.verdictReason,
-      insights: narrative.insights ?? [],
-      trustScore: scoreData.trustScore,
-      signals: scoreData.signals,
-      priceData: scoreData.priceData,
-      reviewData: scoreData.reviewData,
-      sellerData: scoreData.sellerData,
-      auditedAt: new Date().toISOString(),
-    }
-
-    cacheSet(`audit:id:${audit.id}`, audit, 0) // never expires in session
-    cacheSet(cacheKey, audit, 1800)
-
-    return res.json(audit)
-  } catch (err) {
-    console.error('Audit error:', err)
-    return res.status(500).json({ error: 'Internal audit error: ' + err.message })
   }
-})
+
+  const scoreData = computeTrustScore(productData, productData.reviews ?? [], productData.seller ?? {}, competitors)
+  const verdict = scoreToVerdict(scoreData.trustScore)
+  const narrative = await generateNarrative(productData, scoreData, verdict)
+
+  const audit = {
+    id: randomUUID(),
+    sourceUrl: cleanUrl,
+    product: {
+      title: productData.title,
+      brand: productData.brand,
+      images: productData.images ?? [],
+      price_current: productData.price_current,
+      rating_avg: productData.rating_avg,
+      rating_count: productData.rating_count,
+      source_site: productData.source_site,
+      delivery_estimate: productData.delivery_estimate,
+      return_policy_text: productData.return_policy_text,
+      in_stock: productData.in_stock ?? null,
+      availability: productData.availability ?? null,
+    },
+    verdict,
+    verdictReason: narrative?.verdictReason ?? 'Analysis complete.',
+    insights: narrative?.insights ?? [],
+    trustScore: scoreData.trustScore,
+    signals: scoreData.signals,
+    priceData: scoreData.priceData,
+    reviewData: scoreData.reviewData,
+    sellerData: scoreData.sellerData,
+    auditedAt: new Date().toISOString(),
+  }
+
+  cacheSet(`audit:id:${audit.id}`, audit, 0) // never expires in session
+  cacheSet(cacheKey, audit, 1800)
+  return res.json(audit)
+}))
 
 // POST /api/audit/:id/ask
-router.post('/:id/ask', async (req, res) => {
+router.post('/:id/ask', asyncHandler(async (req, res) => {
   const { id } = req.params
   const { question } = req.body ?? {}
 
   if (!question || typeof question !== 'string' || !question.trim()) {
     return res.status(400).json({ error: 'question is required' })
+  }
+  if (question.length > 500) {
+    return res.status(400).json({ error: 'question is too long (max 500 characters)' })
   }
 
   const audit = cacheGet(`audit:id:${id}`)
@@ -152,6 +114,6 @@ router.post('/:id/ask', async (req, res) => {
   })
 
   return res.json({ answer })
-})
+}))
 
 export default router

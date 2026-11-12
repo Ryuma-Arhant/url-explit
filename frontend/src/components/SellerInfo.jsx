@@ -18,18 +18,16 @@ function SellerStat({ icon: Icon, label, value, flagged }) {
 }
 
 export default function SellerInfo({ sellerData }) {
-  const {
-    name = 'Unknown Seller',
-    age_days = 0,
-    rating = 0,
-    total_reviews = 0,
-    return_policy_flags = [],
-  } = sellerData ?? {}
+  const name = sellerData?.name || 'Seller not listed'
+  const age_days = typeof sellerData?.age_days === 'number' ? sellerData.age_days : null // null = not published
+  const rating = Number(sellerData?.rating) || 0
+  const return_policy_flags = sellerData?.return_policy_flags ?? []
 
-  const isNewSeller = age_days < 30
+  const isNewSeller = age_days !== null && age_days < 30
   const isLowRating = rating > 0 && rating < 3.5
 
-  const ageLabel = age_days < 1 ? 'New today'
+  const ageLabel = age_days === null ? 'Not published'
+    : age_days < 1 ? 'New today'
     : age_days < 30 ? `${age_days} days old`
     : age_days < 365 ? `${Math.floor(age_days / 30)} months`
     : `${Math.floor(age_days / 365)}+ years`

@@ -2,10 +2,10 @@ import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import {
-  ExternalLink, RefreshCw, Layers, ArrowUpDown, ChevronDown, ChevronUp,
-  ChevronRight
+  ExternalLink, RefreshCw, Layers, ArrowUpDown, ChevronRight, Info, FlaskConical, Star
 } from 'lucide-react'
 import VerdictBadge from './VerdictBadge'
+import ProductImage from './ProductImage'
 import TrustScore from './TrustScore'
 import PriceCheck from './PriceCheck'
 import ReviewAnalysis from './ReviewAnalysis'
@@ -32,7 +32,7 @@ function CompareCard({ product, index, isSource, isBestValue, isSafest, isBestDe
   const {
     site, title, price_current, price_mrp, currency = 'INR',
     image, rating_avg, rating_count, seller_name, seller_age_days,
-    trust_score, verdict, discount_pct, is_suspicious, similarity_score,
+    trust_score, verdict, discount_pct, is_suspicious, similarity_score, in_stock,
   } = product
 
   const vstyle = VERDICT_STYLES[verdict] ?? VERDICT_STYLES.WAIT
@@ -64,14 +64,7 @@ function CompareCard({ product, index, isSource, isBestValue, isSafest, isBestDe
       </div>
 
       {/* Image */}
-      <div className="h-32 bg-dark-600/60 flex items-center justify-center overflow-hidden">
-        {image
-          ? <img src={image} alt={title} className="h-full w-full object-contain p-3" />
-          : <span className="text-3xl font-bold text-slate-700 select-none">
-              {(site ?? '?')[0].toUpperCase()}
-            </span>
-        }
-      </div>
+      <ProductImage src={image} alt={title ?? ''} fallbackText={site} className="h-36" imgClassName="p-3" />
 
       {/* Content */}
       <div className="flex flex-col flex-1 p-4 space-y-2.5">
@@ -91,7 +84,11 @@ function CompareCard({ product, index, isSource, isBestValue, isSafest, isBestDe
         {/* Price */}
         <div className="flex items-end gap-2">
           <span className="text-lg font-bold text-slate-100">
-            {price_current ? formatCurrency(price_current, currency) : '—'}
+            {price_current
+              ? formatCurrency(price_current, currency)
+              : in_stock === false
+                ? <span className="text-sm font-semibold text-red-400">Out of stock</span>
+                : '—'}
           </span>
           {price_mrp && price_mrp > price_current && (
             <span className="text-xs text-slate-600 line-through mb-0.5">
@@ -168,6 +165,42 @@ function Badge({ label, color }) {
 
 /* ══════════════════════════════════════════════════════════════════════════ */
 
+/* ── Product photo gallery for the report header ─────────────────────── */
+function ProductGallery({ images, title, fallbackText }) {
+  const [active, setActive] = useState(0)
+  const list = images ?? []
+  const current = list[active] ?? list[0]
+  return (
+    <div className="w-full sm:w-56 shrink-0 space-y-2">
+      <ProductImage
+        src={current}
+        alt={title ?? 'Product image'}
+        fallbackText={fallbackText}
+        className="h-56 rounded-2xl border border-white/10"
+        imgClassName="p-3"
+      />
+      {list.length > 1 && (
+        <div className="flex gap-1.5 overflow-x-auto pb-1">
+          {list.slice(0, 6).map((src, i) => (
+            <button
+              key={src}
+              type="button"
+              onClick={() => setActive(i)}
+              aria-label={`Show image ${i + 1}`}
+              className={cn(
+                'shrink-0 rounded-lg border overflow-hidden transition-colors',
+                i === active ? 'border-cyan-400' : 'border-white/10 hover:border-white/30'
+              )}
+            >
+              <ProductImage src={src} fallbackText={fallbackText} className="w-12 h-12" imgClassName="p-1" />
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function UnifiedReport({ audit, comparison, onReset }) {
   const navigate = useNavigate()
   const [sort, setSort] = useState('price_asc')
@@ -194,6 +227,9 @@ export default function UnifiedReport({ audit, comparison, onReset }) {
   const matches = comparison?.matches ?? []
   const aiRecommendation = comparison?.aiRecommendation
   const allCompareProducts = sourceProduct ? [sourceProduct, ...matches] : matches
+  const hasCompareData = allCompareProducts.length > 0
+  const images = product?.images?.length ? product.images : (sourceProduct?.images ?? [])
+  const priceNow = priceData?.current ?? product?.price_current
 
   const sortFn = SORTS.find(s => s.key === sort)?.fn ?? SORTS[0].fn
   const sortedMatches = [...matches].sort(sortFn)
@@ -227,30 +263,67 @@ export default function UnifiedReport({ audit, comparison, onReset }) {
       transition={{ duration: 0.5 }}
       className="max-w-6xl mx-auto space-y-6 pb-16"
     >
+      {/* ── Demo-data banner ─────────────────────────────────────────────── */}
+      {audit._demo && (
+        <div className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+          <FlaskConical className="w-4 h-4 mt-0.5 shrink-0" />
+          <span>Example audit from demo data. This is not a live scan of the link.</span>
+        </div>
+      )}
+
       {/* ── Header ──────────────────────────────────────────────────────── */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 text-xs text-slate-500 mb-2">
-            <span className="truncate">{sourceUrl}</span>
-            <a href={sourceUrl} target="_blank" rel="noopener noreferrer">
-              <ExternalLink className="w-3 h-3 hover:text-cyan-400 transition-colors" />
-            </a>
+      <div className="flex flex-col sm:flex-row items-start gap-5">
+        <ProductGallery images={images} title={product?.title} fallbackText={product?.brand || product?.title} />
+
+        <div className="w-full min-w-0 flex-1 space-y-2">
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-2 text-xs text-slate-500 min-w-0 flex-1">
+              <span className="truncate">{sourceUrl}</span>
+              {sourceUrl && (
+                <a href={sourceUrl} target="_blank" rel="noopener noreferrer" aria-label="Open product page">
+                  <ExternalLink className="w-3 h-3 hover:text-cyan-400 transition-colors" />
+                </a>
+              )}
+            </div>
+            <button
+              onClick={onReset}
+              className="shrink-0 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300
+                         bg-dark-600/60 border border-white/10 px-3 py-2 rounded-xl transition-colors"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+              New audit
+            </button>
           </div>
-          <h1 className="text-xl font-semibold text-slate-100 line-clamp-2">
+          <h1 className="text-xl font-semibold text-slate-100 line-clamp-3">
             {product?.title ?? 'Product Audit'}
           </h1>
           {product?.brand && (
-            <div className="text-sm text-slate-500 mt-1">{product.brand}</div>
+            <div className="text-sm text-slate-500">{product.brand}</div>
           )}
+          <div className="flex flex-wrap items-end gap-x-4 gap-y-1 pt-1">
+            {product?.in_stock === false && (
+              <span className="text-xs font-semibold uppercase tracking-wide text-red-400 border border-red-500/30 bg-red-500/10 rounded-full px-2.5 py-1 mb-0.5">
+                {product.availability || 'Out of stock'}
+              </span>
+            )}
+            {priceNow != null && (
+              <span className="text-2xl font-bold text-slate-100">{formatCurrency(priceNow, priceData?.currency ?? 'INR')}</span>
+            )}
+            {priceData?.mrp > priceNow && (
+              <span className="text-sm text-slate-600 line-through mb-0.5">{formatCurrency(priceData.mrp, priceData?.currency ?? 'INR')}</span>
+            )}
+            {product?.rating_avg != null && (
+              <span className="flex items-center gap-1 text-sm text-slate-400 mb-0.5">
+                <Star className="w-3.5 h-3.5 text-amber-400 fill-amber-400" />
+                {Number(product.rating_avg).toFixed(1)}
+                {product.rating_count ? <span className="text-slate-600">({Number(product.rating_count).toLocaleString('en-IN')})</span> : null}
+              </span>
+            )}
+            {product?.source_site && (
+              <span className="text-xs uppercase tracking-wide text-cyan-500 mb-1">{product.source_site}</span>
+            )}
+          </div>
         </div>
-        <button
-          onClick={onReset}
-          className="shrink-0 flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300
-                     bg-dark-600/60 border border-white/10 px-3 py-2 rounded-xl transition-colors"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          New audit
-        </button>
       </div>
 
       {/* ── Verdict Hero ────────────────────────────────────────────────── */}
@@ -275,15 +348,24 @@ export default function UnifiedReport({ audit, comparison, onReset }) {
           </ul>
         )}
 
-        <div className="text-xs text-slate-600">
-          Audited {new Date(auditedAt).toLocaleString()}
-        </div>
+        {auditedAt && (
+          <div className="text-xs text-slate-600">
+            Audited {new Date(auditedAt).toLocaleString()}
+          </div>
+        )}
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════
           ── COMPARISON SECTION — right after verdict for visibility ─────
           ══════════════════════════════════════════════════════════════════ */}
-      {hasComparison && (
+      {hasComparison && comparison.notice && (
+        <div className="flex items-start gap-2 rounded-xl border border-white/10 bg-dark-700/60 px-4 py-3 text-sm text-slate-400">
+          <Info className="w-4 h-4 mt-0.5 shrink-0 text-cyan-500" />
+          <span>{comparison.notice}</span>
+        </div>
+      )}
+
+      {hasComparison && hasCompareData && (
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -341,7 +423,7 @@ export default function UnifiedReport({ audit, comparison, onReset }) {
           <AIRecommendation recommendation={aiRecommendation} allProducts={allCompareProducts} />
 
           {/* Sort controls */}
-          <div className="flex items-center justify-between">
+          <div className="flex flex-wrap items-center justify-between gap-3">
             <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
               All Listings ({allCompareProducts.length})
             </h3>
@@ -382,7 +464,7 @@ export default function UnifiedReport({ audit, comparison, onReset }) {
               const originalIdx = allCompareProducts.indexOf(m)
               return (
                 <CompareCard
-                  key={m.url ?? i}
+                  key={`${m.site}-${m.url ?? ''}-${i}`}
                   product={m}
                   index={originalIdx}
                   isSource={false}

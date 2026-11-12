@@ -1,10 +1,22 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Link } from 'react-router-dom'
 import { Search, Shield, Zap, Grid } from 'lucide-react'
 import axios from 'axios'
 import ScanningAnimation from '@/components/ScanningAnimation'
 import UnifiedReport from '@/components/UnifiedReport'
+import { loadReport, saveReport, clearReport } from '@/lib/reportStore'
+
+function apiErrorMessage(err, fallback) {
+  const status = err.response?.status
+  const serverMsg = err.response?.data?.error
+  if (serverMsg) return serverMsg
+  // No response, or the dev proxy's bare 5xx when the backend is down
+  if (!err.response || (status >= 500 && !serverMsg)) {
+    return 'Cannot reach the TrustLens server. Make sure the backend is running and try again.'
+  }
+  return fallback
+}
 
 const PLACEHOLDER_URLS = [
   'https://www.amazon.in/dp/...',
@@ -14,50 +26,63 @@ const PLACEHOLDER_URLS = [
 ]
 
 export default function Home() {
-  const [url, setUrl] = useState('')
-  const [phase, setPhase] = useState('input') // input | scanning | report | error
-  const [audit, setAudit] = useState(null)
-  const [comparison, setComparison] = useState(null) // null = loading, object = done
+  // Restore the last report (e.g. after "Back to report" from a seller page)
+  const [saved] = useState(loadReport)
+  const [url, setUrl] = useState(() => saved?.url ?? '')
+  const [phase, setPhase] = useState(() => (saved?.audit ? 'report' : 'input')) // input | scanning | report | error
+  const [audit, setAudit] = useState(() => saved?.audit ?? null)
+  const [comparison, setComparison] = useState(() => saved?.comparison ?? null) // null = loading, object = done
   const [dataReady, setDataReady] = useState(false) // API has responded (audit is the gate)
   const [error, setError] = useState('')
   const [placeholder] = useState(
     () => PLACEHOLDER_URLS[Math.floor(Math.random() * PLACEHOLDER_URLS.length)]
   )
 
+  function fetchComparison(targetUrl) {
+    return axios.post('/api/compare', { url: targetUrl })
+      .then(({ data }) => setComparison(data))
+      .catch(err => {
+        // Non-fatal: the report still shows, with an explanation
+        setComparison({ matches: [], notice: apiErrorMessage(err, 'Cross-platform comparison is unavailable right now.') })
+      })
+  }
+
+  // A restored report whose comparison never finished: ask again (server caches it)
+  useEffect(() => {
+    if (saved?.audit && !saved.comparison && saved.url) fetchComparison(saved.url)
+  }, [saved])
+
+  // Persist the visible report so navigation doesn't lose it
+  useEffect(() => {
+    if (phase === 'report' && audit) saveReport({ url: audit.sourceUrl ?? url, audit, comparison })
+  }, [phase, audit, comparison, url])
+
   async function handleSubmit(e) {
     e.preventDefault()
     const trimmed = url.trim()
     if (!trimmed) return
 
+    clearReport()
     setPhase('scanning')
     setDataReady(false)
     setAudit(null)
     setComparison(null)
     setError('')
 
-    // Fire BOTH audit and comparison in parallel
+    // Fire BOTH audit and comparison in parallel (the backend shares one scrape)
     // Audit is the primary — its completion gates the scanning animation
     // Comparison can arrive later (it will pop in when ready)
-    const auditPromise = axios.post('/api/audit', { url: trimmed })
+    axios.post('/api/audit', { url: trimmed })
       .then(({ data }) => {
         setAudit(data)
         setDataReady(true)
       })
       .catch(err => {
-        const msg = err.response?.data?.error ?? 'Audit failed. Check the URL and try again.'
-        setError(msg)
+        setError(apiErrorMessage(err, 'Audit failed. Check the URL and try again.'))
         setDataReady(true)
       })
 
-    // Comparison runs independently — doesn't block the scanning animation
-    axios.post('/api/compare', { url: trimmed })
-      .then(({ data }) => {
-        setComparison(data)
-      })
-      .catch(() => {
-        // Non-fatal: comparison just won't show
-        setComparison({ matches: [] })
-      })
+    fetchComparison(trimmed)
   }
 
   // Called by ScanningAnimation after animation completes AND dataReady=true
@@ -70,6 +95,7 @@ export default function Home() {
   }
 
   function reset() {
+    clearReport()
     setPhase('input')
     setAudit(null)
     setComparison(null)

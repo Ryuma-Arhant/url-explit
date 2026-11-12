@@ -34,11 +34,9 @@ TrustLens is a next-generation product analysis engine designed to protect consu
 
 ## 🏗 Architecture
 TrustLens utilizes a decoupled architecture with a Vite/React frontend and a Node/Express backend. 
-- **Scraping Layer:** Headless browsing and data extraction via Anakin workflows.
-- **Intelligence Layer:** Groq/Gemini for semantic analysis, NVIDIA for vector similarities.
-- **Storage Layer:** MongoDB with transient LRU caching.
-
-*For detailed architecture, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).*
+- **Scraping Layer:** Product pages (Flipkart, Myntra, Croma, etc.) are fetched directly and parsed from their structured data (JSON-LD / OpenGraph): title, price, MRP, images, rating and reviews. Amazon is scraped through Apify's `junglee/amazon-crawler` actor; cross-platform search uses Apify's Google search actor.
+- **Intelligence Layer:** Groq/Gemini for narrative and follow-up answers (rule-based fallback without a key), NVIDIA for vector similarities.
+- **Storage Layer:** MongoDB (optional) with an in-memory cache.
 
 ---
 
@@ -46,8 +44,8 @@ TrustLens utilizes a decoupled architecture with a Vite/React frontend and a Nod
 
 ### Prerequisites
 - Node.js (v18+)
-- MongoDB instance (optional for local dev with `DEMO_MODE=true`)
-- API Keys: Groq, Gemini, NVIDIA, Anakin (for live scraping)
+- MongoDB instance (optional)
+- API keys (all optional): `APIFY_API_TOKEN` for Amazon links and cross-platform comparison; Groq/Gemini for AI-written narratives. Flipkart, Myntra, Croma and similar stores work with no keys.
 
 ### Installation
 1. **Clone the repository:**
@@ -61,7 +59,7 @@ TrustLens utilizes a decoupled architecture with a Vite/React frontend and a Nod
    cd ../frontend && npm install
    ```
 3. **Environment Setup:**
-   Create a `.env` file in the `/backend` directory (see [ENVIRONMENT_VARIABLES.md](docs/ENVIRONMENT_VARIABLES.md)).
+   Copy `backend/.env.example` to `backend/.env` and fill in the keys you have. Set `DEMO_MODE=true` to use canned demo data instead of live scraping.
 4. **Run Locally:**
    ```bash
    # Terminal 1: Backend
@@ -72,19 +70,11 @@ TrustLens utilizes a decoupled architecture with a Vite/React frontend and a Nod
 
 ---
 
-## 📚 Documentation
-Comprehensive documentation is available in the `docs/` directory:
-
-### Core Docs
-- [Architecture](docs/ARCHITECTURE.md)
-- [API Reference](docs/API_REFERENCE.md)
-- [Database Schema](docs/DATABASE_SCHEMA.md)
-- [Environment Variables](docs/ENVIRONMENT_VARIABLES.md)
-
-### AI & Workflows
-- [AI Workflow Overview](docs/AI_WORKFLOW.md)
-- [Risk Analysis Engine](docs/RISK_ANALYSIS_ENGINE.md)
-- [Product Matching Engine](docs/PRODUCT_MATCHING_ENGINE.md)
+## 🧪 Tests
+```bash
+cd backend && npm test
+```
+Covers product-page extraction, the Amazon actor mapping, URL validation and trust scoring.
 
 ---
 

@@ -7,6 +7,7 @@ import {
   Package, Truck, BarChart3, MessageCircle
 } from 'lucide-react'
 import { cn, formatCurrency } from '@/lib/utils'
+import ProductImage from '@/components/ProductImage'
 
 /* ── Score ring ──────────────────────────────────────────────────────────── */
 function ScoreRing({ score, size = 'lg' }) {
@@ -43,8 +44,11 @@ function ScoreRing({ score, size = 'lg' }) {
           {score}
         </motion.div>
         <div className={cn('text-slate-500 uppercase tracking-widest', isLg ? 'text-xs mt-1' : 'text-[9px]')}>
-          {isLg ? `/ 100 · ${label}` : '/ 100'}
+          / 100
         </div>
+        {isLg && (
+          <div className="text-[10px] uppercase tracking-widest mt-0.5" style={{ color }}>{label}</div>
+        )}
       </div>
     </div>
   )
@@ -56,9 +60,10 @@ function VerdictTag({ verdict }) {
     BUY:  { icon: ShieldCheck,   cls: 'bg-emerald-500/15 border-emerald-500/50 text-emerald-400', glow: 'shadow-[0_0_24px_rgba(52,211,153,0.25)]' },
     WAIT: { icon: AlertTriangle, cls: 'bg-amber-500/15 border-amber-500/50 text-amber-400',     glow: 'shadow-[0_0_24px_rgba(251,191,36,0.25)]' },
     AVOID:{ icon: XCircle,       cls: 'bg-red-500/15 border-red-500/50 text-red-400',           glow: 'shadow-[0_0_24px_rgba(248,113,113,0.25)]' },
-  }[verdict] ?? { icon: AlertTriangle, cls: 'bg-amber-500/15 border-amber-500/50 text-amber-400', glow: '' }
+  }[verdict] ?? { icon: AlertTriangle, cls: 'bg-slate-500/15 border-slate-500/40 text-slate-400', glow: '' }
 
   const Icon = cfg.icon
+  const label = verdict ?? 'Unverified'
   return (
     <motion.div
       initial={{ scale: 0.7, opacity: 0 }}
@@ -67,7 +72,7 @@ function VerdictTag({ verdict }) {
       className={cn('inline-flex items-center gap-2 border rounded-2xl font-bold tracking-widest uppercase px-6 py-3 text-lg', cfg.cls, cfg.glow)}
     >
       <Icon className="w-5 h-5" />
-      {verdict}
+      {label}
     </motion.div>
   )
 }
@@ -148,20 +153,30 @@ export default function SellerDetail() {
     site, url, title, brand, price_current, price_mrp, currency = 'INR',
     image, rating_avg, rating_count, seller_name, seller_age_days,
     trust_score, verdict, discount_pct, is_suspicious, similarity_score,
-    delivery_estimate, _signals,
+    delivery_estimate, _signals, _review,
   } = product
 
-  const isNewSeller = seller_age_days != null && seller_age_days < 30
+  const analysed = trust_score != null
+  const hasAge = typeof seller_age_days === 'number'
+  const isNewSeller = hasAge && seller_age_days < 30
   const isLowRating = rating_avg != null && rating_avg < 3.5
-  const ageLabel = !seller_age_days ? 'Unknown'
+  const ageLabel = !hasAge ? 'Not published by store'
     : seller_age_days < 1 ? 'New today'
     : seller_age_days < 30 ? `${seller_age_days} days`
     : seller_age_days < 365 ? `${Math.floor(seller_age_days / 30)} months`
     : `${Math.floor(seller_age_days / 365)}+ years`
 
-  const trustLevel = trust_score >= 80 ? { label: 'High Trust', desc: 'This seller has strong trust signals. Safe to purchase.', color: 'emerald' }
+  const trustLevel = !analysed ? { label: 'Not analysed', desc: "This listing's page could not be scraped, so only the search result is shown.", color: 'slate' }
+    : trust_score >= 80 ? { label: 'High Trust', desc: 'This listing has strong trust signals.', color: 'emerald' }
     : trust_score >= 50 ? { label: 'Moderate Trust', desc: 'Proceed with caution. Some trust signals are present but not all.', color: 'amber' }
     : { label: 'Low Trust', desc: 'Significant red flags detected. Consider alternative sellers.', color: 'red' }
+
+  const reviewRows = _review ? [
+    { icon: Bot, label: 'Generic bot phrases', value: `${Math.round(_review.genericPhrasePct ?? 0)}%`, flagged: (_review.genericPhrasePct ?? 0) > 30 },
+    { icon: Clock, label: 'Review burst (7-day window)', value: _review.burstDetected ? `${Math.round(_review.burstPct)}% in 7 days` : 'None detected', flagged: !!_review.burstDetected },
+    { icon: User, label: 'Suspicious reviewer names', value: `${Math.round(_review.suspiciousNamePct ?? 0)}%`, flagged: (_review.suspiciousNamePct ?? 0) > 20 },
+    { icon: ShieldCheck, label: 'Return policy red flags', value: _review.returnPolicyFlags?.length ? _review.returnPolicyFlags.join(', ') : 'None found', flagged: !!_review.returnPolicyFlags?.length },
+  ] : []
 
   return (
     <div className="min-h-screen bg-dark-900">
@@ -174,7 +189,7 @@ export default function SellerDetail() {
           <span className="text-sm text-cyan-400">Seller Details</span>
         </div>
         <button
-          onClick={() => navigate(-1)}
+          onClick={() => navigate('/')}
           className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-300 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
@@ -192,12 +207,13 @@ export default function SellerDetail() {
         >
           <div className="flex flex-col md:flex-row">
             {/* Image */}
-            <div className="md:w-56 h-48 md:h-auto bg-dark-600/60 flex items-center justify-center shrink-0">
-              {image
-                ? <img src={image} alt={title} className="h-full w-full object-contain p-4" />
-                : <span className="text-5xl font-bold text-slate-700">{(site ?? '?')[0].toUpperCase()}</span>
-              }
-            </div>
+            <ProductImage
+              src={image}
+              alt={title ?? ''}
+              fallbackText={site}
+              className="md:w-56 h-56 md:h-auto md:min-h-[14rem] shrink-0"
+              imgClassName="p-4"
+            />
 
             {/* Info */}
             <div className="flex-1 p-6 space-y-4">
@@ -217,7 +233,11 @@ export default function SellerDetail() {
 
               <div className="flex items-center gap-4">
                 <div className="text-3xl font-bold text-slate-100">
-                  {price_current ? formatCurrency(price_current, currency) : '—'}
+                  {price_current
+                    ? formatCurrency(price_current, currency)
+                    : product.in_stock === false
+                      ? <span className="text-lg text-red-400">Out of stock</span>
+                      : '—'}
                 </div>
                 {price_mrp && price_mrp > price_current && (
                   <div className="space-y-0.5">
@@ -260,7 +280,13 @@ export default function SellerDetail() {
           </h2>
 
           <div className="flex flex-col md:flex-row items-center gap-8">
-            <ScoreRing score={trust_score ?? 0} size="lg" />
+            {analysed ? (
+              <ScoreRing score={trust_score} size="lg" />
+            ) : (
+              <div className="w-[180px] h-[180px] rounded-full border-[12px] border-dark-600 flex items-center justify-center text-center text-xs uppercase tracking-widest text-slate-500">
+                No score
+              </div>
+            )}
 
             <div className="flex-1 space-y-4">
               {/* Trust level banner */}
@@ -268,12 +294,14 @@ export default function SellerDetail() {
                 'rounded-xl px-5 py-4 border',
                 trustLevel.color === 'emerald' ? 'bg-emerald-500/10 border-emerald-500/20' :
                 trustLevel.color === 'amber' ? 'bg-amber-500/10 border-amber-500/20' :
+                trustLevel.color === 'slate' ? 'bg-dark-600/50 border-white/10' :
                 'bg-red-500/10 border-red-500/20'
               )}>
                 <div className={cn(
                   'text-base font-semibold',
                   trustLevel.color === 'emerald' ? 'text-emerald-400' :
                   trustLevel.color === 'amber' ? 'text-amber-400' :
+                  trustLevel.color === 'slate' ? 'text-slate-300' :
                   'text-red-400'
                 )}>
                   {trustLevel.label}
@@ -363,7 +391,7 @@ export default function SellerDetail() {
             />
             <StatCard
               icon={Star}
-              label="Seller Rating"
+              label="Product Rating"
               value={rating_avg ? `${Number(rating_avg).toFixed(1)} ★ (${rating_count?.toLocaleString() ?? '?'} reviews)` : 'No rating available'}
               flagged={isLowRating}
               delay={0.35}
@@ -377,7 +405,7 @@ export default function SellerDetail() {
             <StatCard
               icon={Package}
               label="Product Match"
-              value={similarity_score != null ? `${Math.round(similarity_score * 100)}% match` : 'Source product'}
+              value={similarity_score == null || similarity_score >= 1 ? 'Source listing' : `${Math.round(similarity_score * 100)}% match`}
               delay={0.45}
             />
           </div>
@@ -394,83 +422,23 @@ export default function SellerDetail() {
             <h2 className="text-sm font-semibold text-slate-400 uppercase tracking-widest">
               Review Authenticity Analysis
             </h2>
-            {rating_count && (
+            {_review && (
               <span className="text-xs text-slate-500 font-mono">
-                {rating_count.toLocaleString()} reviews analyzed
+                {_review.totalReviews ?? 0} reviews sampled
               </span>
             )}
           </div>
 
           <div className="space-y-2">
-            {_signals ? (
-              <>
-                <SignalRow
-                  icon={Bot}
-                  label="Bot phrase detection"
-                  value={(_signals.reviewAuthenticity ?? 0) >= 18 ? 'Clean' : (_signals.reviewAuthenticity ?? 0) >= 10 ? 'Some detected' : 'High bot activity'}
-                  flagged={(_signals.reviewAuthenticity ?? 25) < 12}
-                  delay={0.4}
-                />
-                <SignalRow
-                  icon={Clock}
-                  label="Review burst (7-day window)"
-                  value={(_signals.ratingDistribution ?? 0) >= 10 ? 'Normal distribution' : 'Burst detected'}
-                  flagged={(_signals.ratingDistribution ?? 15) < 8}
-                  delay={0.45}
-                />
-                <SignalRow
-                  icon={User}
-                  label="Suspicious reviewer names"
-                  value={(_signals.reviewAuthenticity ?? 0) >= 15 ? 'All legitimate' : 'Some suspicious'}
-                  flagged={(_signals.reviewAuthenticity ?? 25) < 15}
-                  delay={0.5}
-                />
-                <SignalRow
-                  icon={BarChart3}
-                  label="Rating distribution balance"
-                  value={(_signals.ratingDistribution ?? 0) >= 10 ? 'Natural spread' : 'Skewed to 5-star'}
-                  flagged={(_signals.ratingDistribution ?? 15) < 8}
-                  delay={0.55}
-                />
-                <SignalRow
-                  icon={ShieldCheck}
-                  label="Return policy safety"
-                  value={(_signals.returnPolicy ?? 0) >= 10 ? 'Returns accepted' : 'No returns / restricted'}
-                  flagged={(_signals.returnPolicy ?? 15) < 8}
-                  delay={0.6}
-                />
-              </>
+            {reviewRows.length > 0 ? (
+              reviewRows.map((row, i) => (
+                <SignalRow key={row.label} {...row} delay={0.4 + i * 0.05} />
+              ))
             ) : (
-              <>
-                <SignalRow
-                  icon={Bot}
-                  label="Bot pattern analysis"
-                  value={trust_score >= 70 ? 'Clean' : trust_score >= 40 ? 'Some flags' : 'High bot activity'}
-                  flagged={trust_score < 50}
-                  delay={0.4}
-                />
-                <SignalRow
-                  icon={Clock}
-                  label="Review burst detection"
-                  value={trust_score >= 60 ? 'None detected' : 'Burst detected'}
-                  flagged={trust_score < 60}
-                  delay={0.45}
-                />
-                <SignalRow
-                  icon={User}
-                  label="Reviewer name analysis"
-                  value={trust_score >= 50 ? 'Normal' : 'Suspicious patterns'}
-                  flagged={trust_score < 50}
-                  delay={0.5}
-                />
-                <SignalRow
-                  icon={BarChart3}
-                  label="Rating distribution"
-                  value={trust_score >= 60 ? 'Natural' : 'Skewed'}
-                  flagged={trust_score < 60}
-                  delay={0.55}
-                />
-              </>
+              <div className="flex items-center gap-3 py-3 px-4 rounded-xl bg-dark-600/50 text-sm text-slate-400">
+                <BarChart3 className="w-4 h-4 text-slate-500 shrink-0" />
+                Review analysis isn't available for this listing — its page wasn't scraped, so nothing is shown rather than a guess.
+              </div>
             )}
           </div>
         </motion.div>
@@ -492,15 +460,18 @@ export default function SellerDetail() {
             verdict === 'BUY' ? 'text-emerald-400' :
             verdict === 'AVOID' ? 'text-red-400' : 'text-amber-400'
           )}>
-            {verdict === 'BUY' ? '✅ This seller appears trustworthy' :
-             verdict === 'AVOID' ? '🚫 This seller has significant red flags' :
-             '⚠️ Exercise caution with this seller'}
+            {!analysed ? 'Not enough data to rate this listing' :
+             verdict === 'BUY' ? '✅ This listing appears trustworthy' :
+             verdict === 'AVOID' ? '🚫 This listing has significant red flags' :
+             '⚠️ Exercise caution with this listing'}
           </div>
           <p className="text-sm text-slate-400 max-w-lg mx-auto">
-            {verdict === 'BUY'
-              ? 'Based on our analysis, this seller has good trust signals. Their account age, reviews, and return policy are all acceptable.'
+            {!analysed
+              ? 'Open the listing and check the seller, reviews and return policy yourself before buying.'
+              : verdict === 'BUY'
+              ? 'Price, review and return-policy signals look healthy for this listing.'
               : verdict === 'AVOID'
-              ? 'Multiple red flags were detected including potential fake reviews, new seller account, and restrictive return policy. Consider buying from a more established seller.'
+              ? 'Several of the trust signals above are red. Consider buying from a more established seller.'
               : 'Some trust signals are present but others raise concerns. Compare with other sellers before making a purchase decision.'}
           </p>
         </motion.div>
@@ -508,7 +479,7 @@ export default function SellerDetail() {
         {/* ── View on Site CTA ─────────────────────────────────────────── */}
         <div className="flex gap-4">
           <button
-            onClick={() => navigate(-1)}
+            onClick={() => navigate('/')}
             className="flex-1 flex items-center justify-center gap-2 py-4 rounded-xl
                        border border-white/10 text-slate-400 hover:text-slate-200
                        hover:border-white/20 text-sm font-medium transition-all"

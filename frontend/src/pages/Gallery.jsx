@@ -1,20 +1,24 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
-import { Link } from 'react-router-dom'
-import { ArrowLeft, Shield, AlertTriangle, Layers } from 'lucide-react'
+import { Link, useNavigate } from 'react-router-dom'
+import { ArrowLeft, Shield, AlertTriangle, ChevronRight } from 'lucide-react'
 import axios from 'axios'
 import VerdictBadge from '@/components/VerdictBadge'
+import { saveReport } from '@/lib/reportStore'
 
-function ScamCard({ audit, index }) {
+function ScamCard({ audit, index, onOpen }) {
   const { product, verdict, verdictReason, trustScore, priceData } = audit
-  const isAvoid = verdict === 'AVOID'
 
   return (
     <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.1 }}
-      className="glass-card-hover p-5 space-y-4 cursor-pointer"
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onOpen() } }}
+      className="glass-card-hover p-5 space-y-4 cursor-pointer focus:outline-none focus:ring-2 focus:ring-cyan-500/40"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="flex-1 min-w-0">
@@ -60,20 +64,35 @@ function ScamCard({ audit, index }) {
           Fake anchor pricing detected
         </div>
       )}
+
+      <div className="flex items-center gap-1 text-[11px] text-slate-600">
+        View full report <ChevronRight className="w-3 h-3" />
+      </div>
     </motion.div>
   )
 }
 
 export default function Gallery() {
+  const navigate = useNavigate()
   const [audits, setAudits] = useState([])
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState(false)
 
   useEffect(() => {
     axios.get('/api/demo-gallery')
-      .then(({ data }) => setAudits(data))
-      .catch(() => setAudits([]))
+      .then(({ data }) => setAudits(Array.isArray(data) ? data : []))
+      .catch(() => setLoadError(true))
       .finally(() => setLoading(false))
   }, [])
+
+  function openReport(audit) {
+    saveReport({
+      url: audit.sourceUrl,
+      audit,
+      comparison: { matches: [], notice: 'This is an example from the Scam Gallery, so no live cross-platform comparison was run.' },
+    })
+    navigate('/')
+  }
 
   const avoid = audits.filter(a => a.verdict === 'AVOID')
   const wait = audits.filter(a => a.verdict === 'WAIT')
@@ -87,13 +106,6 @@ export default function Gallery() {
           <span className="font-semibold text-slate-100">TrustLens</span>
         </div>
         <div className="flex items-center gap-4">
-          <Link
-            to="/compare"
-            className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-cyan-400 transition-colors"
-          >
-            <Layers className="w-4 h-4" />
-            Compare
-          </Link>
           <Link
             to="/"
             className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-300 transition-colors"
@@ -114,6 +126,13 @@ export default function Gallery() {
 
         {loading ? (
           <div className="text-center text-slate-600 py-20">Loading gallery...</div>
+        ) : loadError ? (
+          <div className="text-center py-20 space-y-3">
+            <p className="text-slate-400">Couldn't load the gallery. Make sure the backend is running.</p>
+            <button onClick={() => window.location.reload()} className="btn-primary">Retry</button>
+          </div>
+        ) : audits.length === 0 ? (
+          <div className="text-center text-slate-500 py-20">No example audits found in demo-data/.</div>
         ) : (
           <>
             {avoid.length > 0 && (
@@ -125,7 +144,7 @@ export default function Gallery() {
                   </h2>
                 </div>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {avoid.map((a, i) => <ScamCard key={a.id} audit={a} index={i} />)}
+                  {avoid.map((a, i) => <ScamCard key={a.id} audit={a} index={i} onOpen={() => openReport(a)} />)}
                 </div>
               </section>
             )}
@@ -139,7 +158,7 @@ export default function Gallery() {
                   </h2>
                 </div>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {wait.map((a, i) => <ScamCard key={a.id} audit={a} index={i} />)}
+                  {wait.map((a, i) => <ScamCard key={a.id} audit={a} index={i} onOpen={() => openReport(a)} />)}
                 </div>
               </section>
             )}
@@ -153,7 +172,7 @@ export default function Gallery() {
                   </h2>
                 </div>
                 <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {buy.map((a, i) => <ScamCard key={a.id} audit={a} index={i} />)}
+                  {buy.map((a, i) => <ScamCard key={a.id} audit={a} index={i} onOpen={() => openReport(a)} />)}
                 </div>
               </section>
             )}
